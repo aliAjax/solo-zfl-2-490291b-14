@@ -232,8 +232,8 @@ export function getClaimableAmount(
 /**
  * 校验报案：
  * - 键盘须在保单覆盖范围内
- * - 同一事故不能重复赔付（已有有效报案的事故编号不可再用）
- * - 报案金额不能超过扣除免赔额后的剩余保额
+ * - 同一事故编号在所有保单范围内只能有一条有效赔付（拒赔记录不占号）
+ * - 报案金额不能超过扣除免赔额后的剩余保额（按本保单计算）
  */
 export function validateClaim(
   policy: InsurancePolicy,
@@ -250,14 +250,12 @@ export function validateClaim(
   if (!(input.amount > 0)) {
     return { ok: false, reason: '报案金额必须大于 0' };
   }
+  // 跨保单查重：同一事故编号在任意保单下已有有效赔付即拦截
   const duplicated = claims.some(
-    (c) =>
-      c.policyId === policy.id &&
-      c.incidentId.trim() === input.incidentId.trim() &&
-      c.status !== 'rejected',
+    (c) => c.incidentId.trim() === input.incidentId.trim() && c.status !== 'rejected',
   );
   if (duplicated) {
-    return { ok: false, reason: '同一事故已存在有效报案，不能重复赔付' };
+    return { ok: false, reason: '同一事故编号已存在有效赔付记录，不能重复赔付' };
   }
   const { maxPayable } = getClaimableAmount(policy, estimates, claims, input.keyboardId);
   if (input.amount > maxPayable) {

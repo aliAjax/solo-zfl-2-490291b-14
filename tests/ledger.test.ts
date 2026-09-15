@@ -208,6 +208,58 @@ console.log('== 理赔校验 ==');
   eq(after.maxPayable, 0, '扣除免赔额后可报 0');
 }
 
+console.log('== 跨保单重复赔付 ==');
+{
+  const estimates = new Map([
+    ['sample-1', estimateKeyboardValue(sampleValuations.filter((v) => v.keyboardId === 'sample-1'))],
+    ['sample-2', estimateKeyboardValue(sampleValuations.filter((v) => v.keyboardId === 'sample-2'))],
+  ]);
+  const oldPolicy = samplePolicies[0];
+  // 续保生成的新保单：同样覆盖 sample-1 / sample-2
+  const renewedPolicy: InsurancePolicy = { ...oldPolicy, id: 'pol-renewed', renewedFromId: oldPolicy.id };
+
+  const paidOnOld: ClaimRecord = {
+    id: 'clm-cross', policyId: oldPolicy.id, keyboardId: 'sample-1', incidentId: 'INC-CROSS',
+    incidentDate: '2026-09-01', amount: 1000, status: 'paid', reason: '', note: '',
+    createdAt: '2026-09-01T00:00:00Z',
+  };
+  const withPaid = [...sampleClaims, paidOnOld];
+
+  // 同一事故编号去新保单报案 → 拒赔
+  const crossDup = validateClaim(renewedPolicy, estimates, withPaid, {
+    keyboardId: 'sample-1', incidentId: 'INC-CROSS', incidentDate: '2026-09-15', amount: 100, note: '',
+  });
+  eq(crossDup.ok, false, '旧保单已赔付的事故在新保单报案 → 拒赔');
+  assert(crossDup.reason!.includes('重复赔付'), '拒赔原因说明重复赔付');
+
+  // 不同键盘、不同保单，同一事故编号 → 仍拒赔（全范围唯一）
+  const crossOtherKb = validateClaim(renewedPolicy, estimates, withPaid, {
+    keyboardId: 'sample-2', incidentId: 'INC-CROSS', incidentDate: '2026-09-15', amount: 100, note: '',
+  });
+  eq(crossOtherKb.ok, false, '同一事故编号跨键盘跨保单 → 仍拒赔');
+
+  // 拒赔记录不占用事故编号：旧保单上被拒过的事故，新保单可正常报案
+  const rejectedOnOld: ClaimRecord = {
+    ...paidOnOld, id: 'clm-cross-rej', incidentId: 'INC-REJ2', status: 'rejected', reason: '超额',
+  };
+  const afterRej = validateClaim(renewedPolicy, estimates, [...withPaid, rejectedOnOld], {
+    keyboardId: 'sample-1', incidentId: 'INC-REJ2', incidentDate: '2026-09-15', amount: 100, note: '',
+  });
+  eq(afterRej.ok, true, '拒赔记录不占号，同一事故编号可重报');
+
+  // 不同事故在新保单继续赔付
+  const newIncident = validateClaim(renewedPolicy, estimates, withPaid, {
+    keyboardId: 'sample-1', incidentId: 'INC-NEW-2', incidentDate: '2026-09-15', amount: 100, note: '',
+  });
+  eq(newIncident.ok, true, '不同事故编号在新保单可正常赔付');
+
+  // 单保单规则不变：新保单自己的剩余保额独立计算（sample-1 分摊 4091，新保单无赔付记录）
+  const claimable = getClaimableAmount(renewedPolicy, estimates, withPaid, 'sample-1');
+  eq(claimable.allocated, 4091, '新保单 sample-1 分摊 4091');
+  eq(claimable.used, 0, '旧保单的赔付不计入新保单已用额度');
+  eq(claimable.maxPayable, 3891, '新保单可报上限 = 4091 - 200 免赔');
+}
+
 console.log('== 保单状态（续保不空窗） ==');
 {
   const oldPol: InsurancePolicy = {

@@ -168,7 +168,7 @@ export default function ClaimFormModal({ policyId, defaultKeyboardId, estimates,
                   className="input-field font-mono"
                   data-testid="claim-incident-input"
                 />
-                <p className="text-[10px] text-ink-500 mt-1">同一事故编号不能重复赔付</p>
+                <p className="text-[10px] text-ink-500 mt-1">同一事故编号在所有保单内只能赔付一次</p>
               </div>
               <div>
                 <label className="block text-xs font-medium text-ink-300 mb-1.5">事故日期</label>

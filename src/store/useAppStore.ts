@@ -223,14 +223,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const usedIncidents = new Set(
       state.claims
         .filter((c) => c.status !== 'rejected')
-        .map((c) => `${c.policyId}|${c.incidentId}`),
+        .map((c) => c.incidentId.trim()),
     );
     const newClaims: ClaimRecord[] = [];
     for (const c of ledger.claims) {
       if (existingClaimIds.has(c.id)) continue;
-      // 同一事故不能重复赔付：跳过与现有有效报案冲突的理赔
+      // 同一事故编号在所有保单范围内只能有一条有效赔付
       if (c.status !== 'rejected') {
-        const key = `${c.policyId}|${c.incidentId}`;
+        const key = c.incidentId.trim();
         if (usedIncidents.has(key)) continue;
         usedIncidents.add(key);
       }
