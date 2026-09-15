@@ -31,6 +31,10 @@ export function formatDate(iso: string): string {
   }
 }
 
+export function formatMoney(n: number): string {
+  return '¥' + Math.round(n).toLocaleString('zh-CN');
+}
+
 export function compareValues(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     return JSON.stringify(a.sort()) === JSON.stringify(b.sort());

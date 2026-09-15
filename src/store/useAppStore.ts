@@ -1,10 +1,32 @@
 import { create } from 'zustand';
-import type { KeyboardLog, FilterState, UIState, ViewMode } from '@/types';
-import { sampleData } from '@/data/sampleData';
-import type { ImportApplyResult, ValidatedLog } from '@/utils/importExport';
+import type {
+  KeyboardLog,
+  FilterState,
+  UIState,
+  ViewMode,
+  ValuationRecord,
+  InsurancePolicy,
+  ClaimRecord,
+} from '@/types';
+import {
+  sampleData,
+  sampleValuations,
+  samplePolicies,
+  sampleClaims,
+} from '@/data/sampleData';
+import type { ImportApplyResult, ValidatedLog, LedgerExport } from '@/utils/importExport';
 import { applyImport, genNewId } from '@/utils/importExport';
+import {
+  dedupeValuations,
+  estimateKeyboardValue,
+  validateClaim,
+  type ClaimInput,
+} from '@/utils/ledger';
 
 const STORAGE_KEY = 'keyfeeling-logs-v1';
+const VALUATIONS_KEY = 'keyfeeling-valuations-v1';
+const POLICIES_KEY = 'keyfeeling-policies-v1';
+const CLAIMS_KEY = 'keyfeeling-claims-v1';
 
 function loadFromStorage(): KeyboardLog[] {
   try {
@@ -21,9 +43,32 @@ function loadFromStorage(): KeyboardLog[] {
   }
 }
 
+function loadCollection<T>(key: string, seed: T[]): T[] {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      localStorage.setItem(key, JSON.stringify(seed));
+      return seed;
+    }
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    return seed;
+  } catch {
+    return seed;
+  }
+}
+
 function saveToStorage(logs: KeyboardLog[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+  } catch {
+    // ignore
+  }
+}
+
+function saveCollection<T>(key: string, items: T[]) {
+  try {
+    localStorage.setItem(key, JSON.stringify(items));
   } catch {
     // ignore
   }
@@ -33,8 +78,17 @@ function genId() {
   return genNewId();
 }
 
+export interface LedgerImportResult {
+  valuationsAdded: number;
+  policiesAdded: number;
+  claimsAdded: number;
+}
+
 interface AppState {
   logs: KeyboardLog[];
+  valuations: ValuationRecord[];
+  policies: InsurancePolicy[];
+  claims: ClaimRecord[];
   filter: FilterState;
   ui: UIState;
   setFilter: (patch: Partial<FilterState>) => void;
@@ -48,6 +102,19 @@ interface AppState {
     duplicateWithExisting: ValidatedLog[],
     strategy: 'skip' | 'overwrite' | 'regenerate',
   ) => ImportApplyResult;
+  importLedger: (ledger: LedgerExport) => LedgerImportResult;
+  addValuation: (data: Omit<ValuationRecord, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  deleteValuation: (id: string) => void;
+  createPolicy: (data: Omit<InsurancePolicy, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  updatePolicy: (id: string, data: Partial<InsurancePolicy>) => void;
+  deletePolicy: (id: string) => void;
+  renewPolicy: (
+    id: string,
+    patch: { startDate: string; endDate: string; coverageLimit: number; deductible: number },
+  ) => void;
+  fileClaim: (policyId: string, input: ClaimInput) => { ok: boolean; reason?: string };
+  deleteClaim: (id: string) => void;
+  refreshFromStorage: () => void;
   setViewMode: (mode: ViewMode) => void;
   toggleCompareSelect: (id: string) => void;
   clearCompareSelect: () => void;
@@ -77,6 +144,9 @@ const defaultUI: UIState = {
 
 export const useAppStore = create<AppState>((set, get) => ({
   logs: loadFromStorage(),
+  valuations: loadCollection<ValuationRecord>(VALUATIONS_KEY, sampleValuations),
+  policies: loadCollection<InsurancePolicy>(POLICIES_KEY, samplePolicies),
+  claims: loadCollection<ClaimRecord>(CLAIMS_KEY, sampleClaims),
   filter: defaultFilter,
   ui: defaultUI,
 
@@ -109,6 +179,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const selected = get().ui.selectedForCompare.filter((sid) => sid !== id);
     set({ logs: next, ui: { ...get().ui, selectedForCompare: selected, detailLog: null } });
     saveToStorage(next);
+
+    // 级联清理台账：估值、保单覆盖、理赔记录
+    const valuations = get().valuations.filter((v) => v.keyboardId !== id);
+    const policies = get().policies.map((p) =>
+      p.coveredKeyboardIds.includes(id)
+        ? { ...p, coveredKeyboardIds: p.coveredKeyboardIds.filter((k) => k !== id) }
+        : p,
+    );
+    const claims = get().claims.filter((c) => c.keyboardId !== id);
+    set({ valuations, policies, claims });
+    saveCollection(VALUATIONS_KEY, valuations);
+    saveCollection(POLICIES_KEY, policies);
+    saveCollection(CLAIMS_KEY, claims);
   },
 
   importLogs: (selectedForImport, fileValidLogs, duplicateWithExisting, strategy) => {
@@ -122,6 +205,162 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ logs: result.finalLogs });
     saveToStorage(result.finalLogs);
     return result;
+  },
+
+  importLedger: (ledger) => {
+    const state = get();
+
+    const existingValIds = new Set(state.valuations.map((v) => v.id));
+    const newVals = ledger.valuations.filter((v) => !existingValIds.has(v.id));
+    // 合并后按“同一天同一来源只留最新”规则去重
+    const valuations = dedupeValuations([...state.valuations, ...newVals]);
+
+    const existingPolIds = new Set(state.policies.map((p) => p.id));
+    const newPols = ledger.policies.filter((p) => !existingPolIds.has(p.id));
+    const policies = [...newPols, ...state.policies];
+
+    const existingClaimIds = new Set(state.claims.map((c) => c.id));
+    const usedIncidents = new Set(
+      state.claims
+        .filter((c) => c.status !== 'rejected')
+        .map((c) => `${c.policyId}|${c.incidentId}`),
+    );
+    const newClaims: ClaimRecord[] = [];
+    for (const c of ledger.claims) {
+      if (existingClaimIds.has(c.id)) continue;
+      // 同一事故不能重复赔付：跳过与现有有效报案冲突的理赔
+      if (c.status !== 'rejected') {
+        const key = `${c.policyId}|${c.incidentId}`;
+        if (usedIncidents.has(key)) continue;
+        usedIncidents.add(key);
+      }
+      newClaims.push(c);
+    }
+    const claims = [...newClaims, ...state.claims];
+
+    set({ valuations, policies, claims });
+    saveCollection(VALUATIONS_KEY, valuations);
+    saveCollection(POLICIES_KEY, policies);
+    saveCollection(CLAIMS_KEY, claims);
+
+    return {
+      valuationsAdded: newVals.length,
+      policiesAdded: newPols.length,
+      claimsAdded: newClaims.length,
+    };
+  },
+
+  addValuation: (data) => {
+    const now = new Date().toISOString();
+    const rec: ValuationRecord = { ...data, id: genId(), createdAt: now, updatedAt: now };
+    // 同一天同一来源只留最新记录
+    const rest = get().valuations.filter(
+      (v) => !(v.keyboardId === rec.keyboardId && v.source === rec.source && v.date === rec.date),
+    );
+    const next = dedupeValuations([rec, ...rest]);
+    set({ valuations: next });
+    saveCollection(VALUATIONS_KEY, next);
+  },
+
+  deleteValuation: (id) => {
+    const next = get().valuations.filter((v) => v.id !== id);
+    set({ valuations: next });
+    saveCollection(VALUATIONS_KEY, next);
+  },
+
+  createPolicy: (data) => {
+    const now = new Date().toISOString();
+    const policy: InsurancePolicy = { ...data, id: genId(), createdAt: now, updatedAt: now };
+    const next = [policy, ...get().policies];
+    set({ policies: next });
+    saveCollection(POLICIES_KEY, next);
+  },
+
+  updatePolicy: (id, data) => {
+    const next = get().policies.map((p) =>
+      p.id === id ? { ...p, ...data, updatedAt: new Date().toISOString() } : p,
+    );
+    set({ policies: next });
+    saveCollection(POLICIES_KEY, next);
+  },
+
+  deletePolicy: (id) => {
+    const policies = get().policies.filter((p) => p.id !== id);
+    const claims = get().claims.filter((c) => c.policyId !== id);
+    set({ policies, claims });
+    saveCollection(POLICIES_KEY, policies);
+    saveCollection(CLAIMS_KEY, claims);
+  },
+
+  renewPolicy: (id, patch) => {
+    const old = get().policies.find((p) => p.id === id);
+    if (!old) return;
+    const now = new Date().toISOString();
+    // 续保生成新保单并保留旧覆盖记录
+    const renewed: InsurancePolicy = {
+      ...old,
+      ...patch,
+      id: genId(),
+      renewedFromId: old.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    // 旧保单保障期接续到新单生效前一日，避免保障重叠或空窗
+    const dayBefore = new Date(new Date(patch.startDate).getTime() - 86400000)
+      .toISOString()
+      .slice(0, 10);
+    const next = get().policies.map((p) =>
+      p.id === id && p.endDate > dayBefore ? { ...p, endDate: dayBefore, updatedAt: now } : p,
+    );
+    const all = [renewed, ...next];
+    set({ policies: all });
+    saveCollection(POLICIES_KEY, all);
+  },
+
+  fileClaim: (policyId, input) => {
+    const state = get();
+    const policy = state.policies.find((p) => p.id === policyId);
+    if (!policy) return { ok: false, reason: '保单不存在' };
+
+    const estimates = new Map(
+      state.logs.map((l) => [
+        l.id,
+        estimateKeyboardValue(state.valuations.filter((v) => v.keyboardId === l.id)),
+      ]),
+    );
+    const result = validateClaim(policy, estimates, state.claims, input);
+
+    const claim: ClaimRecord = {
+      id: genId(),
+      policyId,
+      keyboardId: input.keyboardId,
+      incidentId: input.incidentId.trim(),
+      incidentDate: input.incidentDate,
+      amount: input.amount,
+      status: result.ok ? 'paid' : 'rejected',
+      reason: result.ok ? '' : result.reason ?? '',
+      note: input.note,
+      createdAt: new Date().toISOString(),
+    };
+    const next = [claim, ...state.claims];
+    set({ claims: next });
+    saveCollection(CLAIMS_KEY, next);
+    return result;
+  },
+
+  deleteClaim: (id) => {
+    const next = get().claims.filter((c) => c.id !== id);
+    set({ claims: next });
+    saveCollection(CLAIMS_KEY, next);
+  },
+
+  refreshFromStorage: () => {
+    set({
+      logs: loadFromStorage(),
+      valuations: loadCollection<ValuationRecord>(VALUATIONS_KEY, sampleValuations),
+      policies: loadCollection<InsurancePolicy>(POLICIES_KEY, samplePolicies),
+      claims: loadCollection<ClaimRecord>(CLAIMS_KEY, sampleClaims),
+    });
   },
 
   setViewMode: (mode) => set({ ui: { ...get().ui, viewMode: mode } }),

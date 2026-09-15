@@ -30,6 +30,7 @@ import {
   type ImportApplyResult,
   EXPORT_FORMAT_MAGIC,
 } from '@/utils/importExport';
+import type { LedgerImportResult } from '@/store/useAppStore';
 import { SWITCH_TYPE_LABELS, SOUND_CHARACTER_LABELS } from '@/types';
 import { getRatingGradient, formatDate } from '@/utils/helpers';
 
@@ -230,14 +231,16 @@ function StatCard({
 }
 
 export default function ImportExportModal() {
-  const { ui, closeImportExport, logs, importLogs } = useAppStore();
+  const { ui, closeImportExport, logs, importLogs, valuations, policies, claims, importLedger } = useAppStore();
   const filteredLogs = useFilteredLogs();
 
   const [activeTab, setActiveTab] = useState<'export' | 'import'>('export');
   const [exportScope, setExportScope] = useState<ExportScope>('all');
+  const [includeLedger, setIncludeLedger] = useState(true);
   const [parseResult, setParseResult] = useState<ImportParseResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [applyResult, setApplyResult] = useState<ImportApplyResult | null>(null);
+  const [ledgerResult, setLedgerResult] = useState<LedgerImportResult | null>(null);
   const [strategy, setStrategy] = useState<DuplicateStrategy>('skip');
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -277,10 +280,12 @@ export default function ImportExportModal() {
       setParseResult(null);
       setImportError(null);
       setApplyResult(null);
+      setLedgerResult(null);
       setStrategy('skip');
       setCheckedIds(new Set());
       setExpandedIds(new Set());
       setExportScope('all');
+      setIncludeLedger(true);
       setActiveTab('export');
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -288,9 +293,10 @@ export default function ImportExportModal() {
 
   const handleExport = useCallback(() => {
     const source = exportScope === 'all' ? logs : filteredLogs;
-    const json = exportToJson(source);
+    const ledger = includeLedger ? { valuations, policies, claims } : undefined;
+    const json = exportToJson(source, ledger);
     downloadJsonFile(json, generateExportFilename());
-  }, [logs, filteredLogs, exportScope]);
+  }, [logs, filteredLogs, exportScope, includeLedger, valuations, policies, claims]);
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -326,7 +332,8 @@ export default function ImportExportModal() {
   );
 
   const handleConfirmImport = useCallback(() => {
-    if (checkedIds.size === 0 || !parseResult) return;
+    if (checkedIds.size === 0 && !parseResult?.ledger) return;
+    if (!parseResult) return;
 
     const selectedIds = Array.from(checkedIds);
     const result = importLogs(
@@ -336,16 +343,22 @@ export default function ImportExportModal() {
       strategy,
     );
     setApplyResult(result);
+    if (parseResult.ledger) {
+      setLedgerResult(importLedger(parseResult.ledger));
+    } else {
+      setLedgerResult(null);
+    }
     setParseResult(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
-  }, [checkedIds, parseResult, importLogs, validated.duplicateWithExisting, strategy]);
+  }, [checkedIds, parseResult, importLogs, importLedger, validated.duplicateWithExisting, strategy]);
 
   const resetImport = useCallback(() => {
     setParseResult(null);
     setImportError(null);
     setApplyResult(null);
+    setLedgerResult(null);
     setCheckedIds(new Set());
     setExpandedIds(new Set());
     if (fileInputRef.current) {
@@ -437,6 +450,22 @@ export default function ImportExportModal() {
                 包含: meta + data
               </span>
             </div>
+
+            <label className="flex items-center gap-2 text-xs text-ink-300 cursor-pointer select-none w-fit">
+              <input
+                type="checkbox"
+                checked={includeLedger}
+                onChange={(e) => setIncludeLedger(e.target.checked)}
+                className="accent-[#d4944a] h-3.5 w-3.5"
+                data-testid="export-include-ledger"
+              />
+              <span>
+                同时导出估值与保险台账
+                <span className="text-ink-500 font-mono text-[10px] ml-1">
+                  （估值 {valuations.length} · 保单 {policies.length} · 理赔 {claims.length}）
+                </span>
+              </span>
+            </label>
           </div>
         </div>
       </div>
@@ -481,6 +510,16 @@ export default function ImportExportModal() {
           <StatCard label="新ID" value={stats.regenerated} variant="warning" />
           <StatCard label="跳过" value={stats.skipped} variant="default" />
         </div>
+
+        {ledgerResult && (
+          <div
+            className="mb-4 rounded-lg bg-slateblue-500/10 border border-slateblue-500/25 px-3 py-2 text-[11px] font-mono text-slateblue-300"
+            data-testid="ledger-import-result"
+          >
+            台账合并：估值 +{ledgerResult.valuationsAdded} · 保单 +{ledgerResult.policiesAdded} · 理赔 +{ledgerResult.claimsAdded}
+            <span className="text-ink-500">（已存在的 ID 自动跳过，估值按同日同来源去重）</span>
+          </div>
+        )}
 
         <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-moss-500/15 text-moss-300 border border-moss-500/30 text-[11px] font-mono mb-4">
           <Sparkles className="h-3.5 w-3.5" />
@@ -534,6 +573,21 @@ export default function ImportExportModal() {
           <StatCard label="重复(现有)" value={existingDupCount} variant="warning" />
           <StatCard label="全新" value={pureNewCount} variant="success" />
         </div>
+
+        {parseResult.ledger && (
+          <div
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slateblue-500/10 border border-slateblue-500/25 text-[11px] font-mono"
+            data-testid="ledger-parse-info"
+          >
+            <Shield className="h-3.5 w-3.5 text-slateblue-300 shrink-0" />
+            <span className="text-slateblue-300">
+              包含台账：估值 {parseResult.ledger.valuations.length} · 保单 {parseResult.ledger.policies.length} · 理赔 {parseResult.ledger.claims.length}
+            </span>
+            {parseResult.ledgerInvalid > 0 && (
+              <span className="text-wine-400">（{parseResult.ledgerInvalid} 条无效已跳过）</span>
+            )}
+          </div>
+        )}
 
         {invalidCount > 0 && (
           <div className="space-y-2">
@@ -715,7 +769,26 @@ export default function ImportExportModal() {
           </>
         )}
 
-        {totalValidForDisplay === 0 && invalidCount > 0 && (
+        {totalValidForDisplay === 0 && parseResult.ledger && (
+          <div className="flex gap-2">
+            <button
+              onClick={resetImport}
+              className="flex-1 btn-secondary justify-center"
+            >
+              重新选择文件
+            </button>
+            <button
+              onClick={handleConfirmImport}
+              className="flex-1 btn-primary justify-center"
+              data-testid="confirm-import-ledger"
+            >
+              <Check className="h-4 w-4" />
+              确认导入台账
+            </button>
+          </div>
+        )}
+
+        {totalValidForDisplay === 0 && invalidCount > 0 && !parseResult.ledger && (
           <div className="rounded-lg bg-wine-500/10 border border-wine-500/30 p-4 text-center">
             <AlertTriangle className="h-8 w-8 text-wine-400 mx-auto mb-2" />
             <p className="text-xs font-semibold text-wine-300 mb-1">无有效记录</p>

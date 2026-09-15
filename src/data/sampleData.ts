@@ -1,7 +1,8 @@
-import type { KeyboardLog } from '@/types';
+import type { KeyboardLog, ValuationRecord, InsurancePolicy, ClaimRecord } from '@/types';
 
 const now = Date.now();
 const daysAgo = (n: number) => new Date(now - n * 86400000).toISOString();
+const dateStr = (n: number) => daysAgo(n).slice(0, 10);
 
 export const sampleData: KeyboardLog[] = [
   {
@@ -107,5 +108,121 @@ export const sampleData: KeyboardLog[] = [
     notes: '打字不累，声音极小，是开会静音神器。但是轴体缺少个性和反馈感，对于喜欢机械手感的玩家来说略无聊，适合码字生产力场景。',
     createdAt: daysAgo(120),
     updatedAt: daysAgo(80),
+  },
+];
+
+/** 示例估值记录：覆盖多来源、成色/箱说修正与待核场景 */
+export const sampleValuations: ValuationRecord[] = [
+  {
+    id: 'val-1a',
+    keyboardId: 'sample-1',
+    source: 'market',
+    date: dateStr(25),
+    amount: 5200,
+    condition: 'excellent',
+    boxPapers: 'full',
+    modAdjustment: 300,
+    note: '二手平台同配置成交价，含精润与键帽升级加价',
+    createdAt: daysAgo(25),
+    updatedAt: daysAgo(25),
+  },
+  {
+    id: 'val-1b',
+    keyboardId: 'sample-1',
+    source: 'dealer',
+    date: dateStr(18),
+    amount: 5600,
+    condition: 'excellent',
+    boxPapers: 'full',
+    modAdjustment: 0,
+    note: '商家回收报价',
+    createdAt: daysAgo(18),
+    updatedAt: daysAgo(18),
+  },
+  {
+    id: 'val-1c',
+    keyboardId: 'sample-1',
+    source: 'community',
+    date: dateStr(10),
+    amount: 5000,
+    condition: 'good',
+    boxPapers: 'full',
+    modAdjustment: 0,
+    note: '社区估价帖汇总',
+    createdAt: daysAgo(10),
+    updatedAt: daysAgo(10),
+  },
+  {
+    id: 'val-2a',
+    keyboardId: 'sample-2',
+    source: 'market',
+    date: dateStr(15),
+    amount: 1400,
+    condition: 'good',
+    boxPapers: 'box_only',
+    modAdjustment: -100,
+    note: '键帽打油，酌情扣减',
+    createdAt: daysAgo(15),
+    updatedAt: daysAgo(15),
+  },
+  {
+    id: 'val-2b',
+    keyboardId: 'sample-2',
+    source: 'self',
+    date: dateStr(15),
+    amount: 1600,
+    condition: 'good',
+    boxPapers: 'box_only',
+    modAdjustment: 0,
+    note: '自评',
+    createdAt: daysAgo(15),
+    updatedAt: daysAgo(15),
+  },
+  {
+    id: 'val-3a',
+    keyboardId: 'sample-3',
+    source: 'self',
+    date: dateStr(5),
+    amount: 2200,
+    condition: 'excellent',
+    boxPapers: 'full',
+    modAdjustment: 200,
+    note: '自评，含手工精润加价；仅自评来源，证据不足待核',
+    createdAt: daysAgo(5),
+    updatedAt: daysAgo(5),
+  },
+];
+
+/** 示例保单：覆盖 sample-1 / sample-2，估值合计超过额度以演示超额分摊 */
+export const samplePolicies: InsurancePolicy[] = [
+  {
+    id: 'pol-1',
+    name: '藏品综合险 2026',
+    insurer: '平安财险',
+    policyNo: 'PA-2026-0081',
+    coverageLimit: 5000,
+    deductible: 200,
+    startDate: '2026-01-01',
+    endDate: '2026-12-31',
+    coveredKeyboardIds: ['sample-1', 'sample-2'],
+    renewedFromId: null,
+    createdAt: daysAgo(200),
+    updatedAt: daysAgo(200),
+  },
+];
+
+/** 示例理赔：sample-2 已赔付一次，用于演示剩余保额与重复赔付拦截 */
+export const sampleClaims: ClaimRecord[] = [
+  {
+    id: 'clm-1',
+    policyId: 'pol-1',
+    keyboardId: 'sample-2',
+    incidentId: 'INC-2026-001',
+    incidentDate: dateStr(60),
+    amount: 500,
+    status: 'paid',
+    reason: '',
+    note: '运输磕碰，外壳掉漆',
+    createdAt: daysAgo(60),
   },
 ];

@@ -1,4 +1,4 @@
-import type { KeyboardLog } from '@/types';
+import type { KeyboardLog, ValuationRecord, InsurancePolicy, ClaimRecord } from '@/types';
 import {
   SWITCH_TYPES,
   SOUND_CHARACTERS,
@@ -7,11 +7,24 @@ import {
   PLATE_MATERIALS,
   CASE_MATERIALS,
 } from '@/types';
+import {
+  dedupeValuations,
+  validateValuationRecord,
+  validatePolicyRecord,
+  validateClaimRecord,
+} from '@/utils/ledger';
 
-export const EXPORT_FORMAT_VERSION = 1;
+export const EXPORT_FORMAT_VERSION = 2;
 export const EXPORT_FORMAT_MAGIC = 'keyfeeling-export';
 
 export type DuplicateStrategy = 'skip' | 'overwrite' | 'regenerate';
+
+/** 估值与保险台账导出数据 */
+export interface LedgerExport {
+  valuations: ValuationRecord[];
+  policies: InsurancePolicy[];
+  claims: ClaimRecord[];
+}
 
 export interface ExportEnvelope {
   format: string;
@@ -19,6 +32,7 @@ export interface ExportEnvelope {
   exportedAt: string;
   recordCount: number;
   data: KeyboardLog[];
+  ledger?: LedgerExport;
 }
 
 export interface ImportParseResult {
@@ -27,6 +41,10 @@ export interface ImportParseResult {
   fileInternalDuplicates: Array<{ index: number; id: string; raw: unknown }>;
   totalParsed: number;
   envelope?: ExportEnvelope;
+  /** 文件中的台账数据（已校验、估值已按同日同来源去重） */
+  ledger?: LedgerExport;
+  /** 台账中被跳过的无效条目数 */
+  ledgerInvalid: number;
 }
 
 export interface ImportApplyResult {
@@ -186,6 +204,7 @@ export function parseImportData(rawJson: string, existingIds: string[]): ImportP
 
   let envelope: ExportEnvelope | undefined;
   let rawArray: unknown[];
+  let rawLedger: unknown;
 
   if (
     typeof parsed === 'object' &&
@@ -198,6 +217,7 @@ export function parseImportData(rawJson: string, existingIds: string[]): ImportP
   ) {
     envelope = parsed as ExportEnvelope;
     rawArray = envelope.data;
+    rawLedger = (parsed as { ledger?: unknown }).ledger;
   } else if (Array.isArray(parsed)) {
     rawArray = parsed;
   } else {
@@ -229,12 +249,62 @@ export function parseImportData(rawJson: string, existingIds: string[]): ImportP
 
   void existingIds;
 
+  const { ledger, ledgerInvalid } = parseLedger(rawLedger);
+
   return {
     fileValidLogs,
     fileInvalidItems,
     fileInternalDuplicates,
     totalParsed: rawArray.length,
     envelope,
+    ledger,
+    ledgerInvalid,
+  };
+}
+
+/** 解析并校验台账数据：无效条目跳过，估值按“同日同来源”规则去重 */
+function parseLedger(raw: unknown): { ledger?: LedgerExport; ledgerInvalid: number } {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ledger: undefined, ledgerInvalid: 0 };
+  }
+  const obj = raw as Record<string, unknown>;
+  let invalid = 0;
+
+  const valuations: ValuationRecord[] = [];
+  if (Array.isArray(obj.valuations)) {
+    for (const item of obj.valuations) {
+      if (validateValuationRecord(item).valid) valuations.push(item as ValuationRecord);
+      else invalid++;
+    }
+  }
+
+  const policies: InsurancePolicy[] = [];
+  if (Array.isArray(obj.policies)) {
+    for (const item of obj.policies) {
+      if (validatePolicyRecord(item).valid) policies.push(item as InsurancePolicy);
+      else invalid++;
+    }
+  }
+
+  const claims: ClaimRecord[] = [];
+  if (Array.isArray(obj.claims)) {
+    for (const item of obj.claims) {
+      if (validateClaimRecord(item).valid) claims.push(item as ClaimRecord);
+      else invalid++;
+    }
+  }
+
+  if (valuations.length === 0 && policies.length === 0 && claims.length === 0) {
+    return { ledger: undefined, ledgerInvalid: invalid };
+  }
+
+  return {
+    ledger: {
+      valuations: dedupeValuations(valuations),
+      policies,
+      claims,
+    },
+    ledgerInvalid: invalid,
   };
 }
 
@@ -352,18 +422,19 @@ export function applyImport(
   };
 }
 
-export function buildExportEnvelope(logs: KeyboardLog[]): ExportEnvelope {
+export function buildExportEnvelope(logs: KeyboardLog[], ledger?: LedgerExport): ExportEnvelope {
   return {
     format: EXPORT_FORMAT_MAGIC,
-    version: EXPORT_FORMAT_VERSION,
+    version: ledger ? EXPORT_FORMAT_VERSION : 1,
     exportedAt: new Date().toISOString(),
     recordCount: logs.length,
     data: logs,
+    ...(ledger ? { ledger } : {}),
   };
 }
 
-export function exportToJson(logs: KeyboardLog[]): string {
-  return JSON.stringify(buildExportEnvelope(logs), null, 2);
+export function exportToJson(logs: KeyboardLog[], ledger?: LedgerExport): string {
+  return JSON.stringify(buildExportEnvelope(logs, ledger), null, 2);
 }
 
 export function downloadJsonFile(content: string, filename: string): void {

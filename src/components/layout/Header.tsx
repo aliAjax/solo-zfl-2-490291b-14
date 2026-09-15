@@ -1,4 +1,4 @@
-import { Keyboard, Plus, GitCompare, List, BarChart3, HardDrive } from 'lucide-react';
+import { Keyboard, Plus, GitCompare, List, BarChart3, HardDrive, Shield } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 
 export default function Header() {
@@ -75,6 +75,19 @@ export default function Header() {
             >
               <BarChart3 className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">统计</span>
+            </button>
+            <button
+              onClick={() => setViewMode('insurance')}
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                viewMode === 'insurance'
+                  ? 'bg-brass-300/20 text-brass-100 border border-brass-300/30'
+                  : 'text-ink-400 hover:text-ink-200'
+              }`}
+              title="估值与保险看板"
+              data-testid="nav-insurance"
+            >
+              <Shield className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">看板</span>
             </button>
           </div>
 
